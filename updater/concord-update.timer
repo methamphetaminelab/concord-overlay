@@ -1,0 +1,9 @@
+[Unit]
+Description=Check for a new concord release
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=2h
+
+[Install]
+WantedBy=timers.target

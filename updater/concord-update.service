@@ -1,0 +1,10 @@
+[Unit]
+Description=Build and install the patched concord release
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/concord-update run
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+MemoryHigh=6G

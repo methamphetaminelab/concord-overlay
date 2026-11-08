@@ -1,0 +1,22 @@
+monitor = "Any"
+
+horizontal = false
+rightalign = false
+topalign = 1
+vert_edge_padding = 5
+horz_edge_padding = 10
+
+avatar_size = 30
+icon_spacing = 8
+icon_transparency = 1.0
+highlight_self = true
+
+border_width = 2
+tk_col = [0.0, 0.7, 0.0, 1.0]
+mt_col = [0.6, 0.0, 0.0, 1.0]
+mt_bg_col = [0.0, 0.0, 0.0, 0.5]
+
+fade_out_inactive = true
+inactive_time = 10
+inactive_fade_time = 30
+fade_out_limit = 0.5

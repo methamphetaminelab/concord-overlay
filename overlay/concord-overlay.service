@@ -1,0 +1,17 @@
+[Unit]
+Description=concord-overlay: Discord voice overlay for concord
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+ExecStart=%h/.local/bin/concord-overlay
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=2 3
+MemoryMax=48M
+CPUQuota=25%
+
+[Install]
+WantedBy=graphical-session.target

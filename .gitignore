@@ -1,0 +1,5 @@
+/vendor/
+target/
+/.superpowers/
+__pycache__/
+/docs/superpowers/

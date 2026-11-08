@@ -1,0 +1,24 @@
+diff --git a/src/discord/client/lifecycle.rs b/src/discord/client/lifecycle.rs
+index 7bb0ba0..67e98cc 100644
+--- a/src/discord/client/lifecycle.rs
++++ b/src/discord/client/lifecycle.rs
+@@ -31,6 +31,7 @@ impl AppEventPublisher {
+         )
+         .await;
+         voice::forward_app_event(&self.voice_events_tx, &event);
++        crate::discord::voice_export::on_app_event(&self.state, &event);
+     }
+ 
+     fn prepare(&self, event: &mut AppEvent) {
+diff --git a/src/discord/mod.rs b/src/discord/mod.rs
+index e135fd0..cba3b90 100644
+--- a/src/discord/mod.rs
++++ b/src/discord/mod.rs
+@@ -36,6 +36,7 @@ mod upload;
+ mod user_settings;
+ mod verification;
+ mod voice;
++mod voice_export;
+ 
+ pub(crate) use action_policy::ActionDecision;
+ pub use action_policy::{ActionBlockReason, DiscordAction};

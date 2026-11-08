@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+url=${CONCORD_UPDATE_URL:-https://github.com/chojs23/concord.git}
+prefix=${CONCORD_UPDATE_PREFIX:-$HOME/.local/bin}
+state=${XDG_STATE_HOME:-$HOME/.local/state}/concord-overlay
+src=${XDG_CACHE_HOME:-$HOME/.cache}/concord-overlay/src
+apply=${XDG_DATA_HOME:-$HOME/.local/share}/concord-overlay/patch/apply.sh
+
+log() { echo "concord-update: $*" >&2; }
+
+latest_tag() {
+    local out
+    out=$(git ls-remote --tags --refs "$url" 'v*') || return 1
+    out=$(printf '%s\n' "$out" | sed 's|.*refs/tags/||' | sort -V | tail -n 1)
+    [[ -n $out ]] || return 1
+    printf '%s\n' "$out"
+}
+
+installed_tag() { cat "$state/installed-tag" 2>/dev/null || echo none; }
+
+game_running() {
+    pgrep -x wineserver >/dev/null && return 0
+    if command -v gamemoded >/dev/null && gamemoded -s 2>&1 | grep -qx 'gamemode is active'; then
+        return 0
+    fi
+    return 1
+}
+
+notify_once() {
+    local key="$1 $2"
+    log "$3"
+    if [[ $(cat "$state/notified" 2>/dev/null || true) != "$key" ]]; then
+        if notify-send -a concord-update "concord update" "$3"; then
+            echo "$key" > "$state/notified"
+        else
+            log "notify-send failed"
+        fi
+    fi
+}
+
+cmd_status() {
+    local latest
+    echo "installed: $(installed_tag)"
+    if latest=$(latest_tag); then echo "latest:    $latest"; else echo "latest:    (network error)"; fi
+    if game_running; then echo "game:      running"; else echo "game:      not running"; fi
+}
+
+cmd_run() {
+    local tag old free_kb
+    tag=$(latest_tag) || { log "cannot fetch tags from $url"; exit 1; }
+    old=$(installed_tag)
+    [[ $tag != "$old" ]] || exit 0
+    if game_running; then log "deferred: game running"; exit 0; fi
+    if [[ ! -x $apply ]]; then log "$apply not found or not executable: run install.sh first"; exit 1; fi
+
+    if [[ -d $src/.git ]]; then
+        git -C "$src" fetch --tags --force
+    else
+        mkdir -p "$(dirname "$src")"
+        git clone "$url" "$src"
+    fi
+    git -C "$src" checkout --force "refs/tags/$tag"
+    git -C "$src" clean -fdx -e target
+    free_kb=$(df --output=avail -k "$src" | tail -n 1)
+    if (( free_kb < 10 * 1024 * 1024 )); then
+        log "under 10 GiB free, removing target/"
+        rm -rf "$src/target"
+    fi
+
+    if ! "$apply" "$src" >&2; then
+        notify_once "$tag" patch "concord $tag: patch does not apply, staying on $old"
+        exit 1
+    fi
+    if ! (cd "$src" && nice -n 19 ionice -c 3 cargo build --release --locked) >&2; then
+        notify_once "$tag" build "concord $tag: build failed, staying on $old"
+        exit 1
+    fi
+
+    mkdir -p "$prefix"
+    cp "$src/target/release/concord" "$prefix/.concord.new"
+    if [[ -e $prefix/concord ]]; then cp -p "$prefix/concord" "$prefix/concord.prev"; fi
+    mv -f "$prefix/.concord.new" "$prefix/concord"
+    echo "$tag" > "$state/installed-tag"
+    notify-send -a concord-update "concord update" "concord updated to $tag" || log "notify-send failed"
+    log "updated $old -> $tag"
+}
+
+mkdir -p "$state"
+case ${1:-run} in
+    status) cmd_status ;;
+    run)
+        exec 9> "$state/lock"
+        flock -n 9 || { log "another run is in progress"; exit 0; }
+        cmd_run ;;
+    *) echo "usage: $0 [run|status]" >&2; exit 2 ;;
+esac
