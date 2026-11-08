@@ -8,9 +8,8 @@ case ${1:-} in
     *) echo "usage: $0 [--dry-run]" >&2; exit 2 ;;
 esac
 
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 bin=$HOME/.local/bin
-data=${XDG_DATA_HOME:-$HOME/.local/share}/concord-overlay/patch
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 cfgdir=${XDG_CONFIG_HOME:-$HOME/.config}/concord-overlay
 autostart=${XDG_CONFIG_HOME:-$HOME/.config}/autostart
@@ -19,21 +18,14 @@ act() {
     if (( dry )); then printf '+'; printf ' %q' "$@"; echo; else "$@"; fi
 }
 
-overlay=0
-if [[ -x $root/overlay/target/release/concord-overlay ]]; then
-    overlay=1
-else
-    echo "overlay not built, skipping it: run 'cargo build --release' in $root/overlay, then re-run $0" >&2
+if [[ ! -x $root/overlay/target/release/concord-overlay ]]; then
+    echo "overlay not built: run 'cargo build --release' in $root/overlay, then re-run $0" >&2
+    exit 1
 fi
 
-act mkdir -p "$data" "$bin" "$units"
-act cp -f "$root"/patch/* "$data/"
-act install -m 755 "$root/updater/concord-update" "$bin/concord-update"
-act install -m 644 "$root/updater/concord-update.service" "$root/updater/concord-update.timer" "$units/"
-if (( overlay )); then
-    act install -m 755 "$root/overlay/target/release/concord-overlay" "$bin/concord-overlay"
-    act install -m 644 "$root/overlay/concord-overlay.service" "$units/"
-fi
+act mkdir -p "$bin" "$units"
+act install -m 755 "$root/overlay/target/release/concord-overlay" "$bin/concord-overlay"
+act install -m 644 "$root/overlay/concord-overlay.service" "$units/"
 
 if [[ ! -e $cfgdir/config.toml ]]; then
     echo "Connected outputs:"
@@ -67,11 +59,6 @@ if [[ -f $orig ]] && ! grep -qx 'Hidden=true' "$orig"; then
 fi
 
 act systemctl --user daemon-reload
-act systemctl --user enable --now concord-update.timer
-if (( overlay )); then act systemctl --user enable --now concord-overlay.service; fi
+act systemctl --user enable --now concord-overlay.service
 
 echo "If Discover's overlay is running now, close it (or log out and back in) so only one overlay shows."
-if [[ -e /usr/bin/concord ]]; then
-    echo "/usr/bin/concord (AUR concord-bin) is still installed; the patched $bin/concord wins only via PATH order."
-    echo "Optionally remove it: paru -Rns concord-bin"
-fi

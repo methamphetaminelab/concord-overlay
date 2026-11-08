@@ -3,6 +3,7 @@ mod config;
 mod draw;
 mod voice;
 
+use rustix::fs::inotify;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_dispatch2, delegate_registry,
@@ -36,7 +37,11 @@ use smithay_client_toolkit::{
     },
 };
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::{ErrorKind, Read};
+use std::mem::MaybeUninit;
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, exit};
@@ -64,6 +69,7 @@ struct Surface {
 
 struct App {
     cfg: config::Config,
+    cfg_path: PathBuf,
     handle: LoopHandle<'static, App>,
     qh: QueueHandle<App>,
     registry: RegistryState,
@@ -90,6 +96,52 @@ impl App {
         if msg != self.last_log {
             eprintln!("concord-overlay: {msg}");
             self.last_log = msg;
+        }
+    }
+
+    fn watch_config(&mut self) -> Result<(), String> {
+        let dir = self.cfg_path.parent().expect("config path has a directory");
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let fd = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)
+            .map_err(|e| format!("inotify: {e}"))?;
+        let flags = inotify::WatchFlags::CLOSE_WRITE
+            | inotify::WatchFlags::MOVED_TO
+            | inotify::WatchFlags::MOVED_FROM
+            | inotify::WatchFlags::CREATE
+            | inotify::WatchFlags::DELETE;
+        inotify::add_watch(&fd, dir, flags).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let name = self
+            .cfg_path
+            .file_name()
+            .expect("config file name")
+            .to_owned();
+        let src = Generic::new(fd, Interest::READ, Mode::Level);
+        self.handle
+            .insert_source(src, move |_, fd, app| {
+                if config_touched(fd, &name)? {
+                    app.reload_config();
+                }
+                Ok(PostAction::Continue)
+            })
+            .map_err(|e| format!("event loop: {e}"))?;
+        Ok(())
+    }
+
+    fn reload_config(&mut self) {
+        match config::load(&self.cfg_path) {
+            Ok(cfg) if cfg == self.cfg => {}
+            Ok(cfg) => {
+                eprintln!(
+                    "concord-overlay: config reloaded from {}",
+                    self.cfg_path.display()
+                );
+                self.last_log.clear();
+                self.cfg = cfg;
+                self.surface = None;
+                self.pool = None;
+                self.refresh();
+            }
+            Err(e) => self.log(format!("config error, keeping the previous config: {e}")),
         }
     }
 
@@ -440,6 +492,24 @@ impl ProvidesRegistryState for App {
 delegate_registry!(App);
 delegate_dispatch2!(App);
 
+fn config_touched(fd: &OwnedFd, name: &OsStr) -> std::io::Result<bool> {
+    let mut buf = [MaybeUninit::uninit(); 4096];
+    let mut reader = inotify::Reader::new(fd, &mut buf);
+    let mut touched = false;
+    loop {
+        match reader.next() {
+            Ok(event) => {
+                touched |= event
+                    .file_name()
+                    .is_some_and(|n| OsStr::from_bytes(n.to_bytes()) == name);
+            }
+            Err(rustix::io::Errno::AGAIN) => return Ok(touched),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 fn fail(code: i32, msg: impl std::fmt::Display) -> ! {
     let msg = msg.to_string();
     eprintln!("concord-overlay: {msg}");
@@ -496,6 +566,7 @@ fn main() {
     let outputs = OutputState::new(&globals, &qh);
     let mut app = App {
         cfg,
+        cfg_path,
         handle,
         qh,
         registry: RegistryState::new(&globals),
@@ -522,10 +593,38 @@ fn main() {
     WaylandSource::new(conn.clone(), queue)
         .insert(event_loop.handle())
         .expect("wayland source");
+    if let Err(e) = app.watch_config() {
+        eprintln!("concord-overlay: error: config changes need a restart, cannot watch: {e}");
+    }
     if !app.try_connect() {
         app.schedule_reconnect();
     }
     if let Err(e) = event_loop.run(None, &mut app, |_| {}) {
         fail(1, format_args!("Wayland connection lost: {e}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_touched_sees_only_the_config_file() {
+        let dir =
+            std::env::temp_dir().join(format!("concord-overlay-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fd =
+            inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK).unwrap();
+        let flags = inotify::WatchFlags::CLOSE_WRITE | inotify::WatchFlags::MOVED_TO;
+        inotify::add_watch(&fd, &dir, flags).unwrap();
+        let name = OsStr::new("config.toml");
+        assert!(!config_touched(&fd, name).unwrap());
+        std::fs::write(dir.join("other.toml"), "x").unwrap();
+        assert!(!config_touched(&fd, name).unwrap());
+        std::fs::write(dir.join(".config.toml.tmp"), "horizontal = true").unwrap();
+        std::fs::rename(dir.join(".config.toml.tmp"), dir.join("config.toml")).unwrap();
+        assert!(config_touched(&fd, name).unwrap());
+        assert!(!config_touched(&fd, name).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
